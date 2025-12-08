@@ -1,4 +1,4 @@
-d = readRDS('simuNBMM_lmm_lmer_diff_all.rds')
+d = readRDS('~/simuNBMM_lmm_lmer_diff_all.rds')
 
 plmm = readRDS('simuNBMM_plmm_log.rds')
 pnbn = readRDS('simuNBMM_pnbn_log.rds')

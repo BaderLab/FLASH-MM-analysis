@@ -1,3 +1,6 @@
+# Load required library
+library(dplyr)
+library(ggrepel)
 library(ggplot2)
 library(RColorBrewer)
 library(plyr)
@@ -7,21 +10,12 @@ library(viridis)
 library(scales)
 library(gprofiler2)
 
-c25 <- c(
-  "dodgerblue2", "#E31A1C", # red
-  "green4",
-  "#6A3D9A", # purple
-  "#FF7F00", # orange
-  "palegreen", "gold1",
-  "skyblue2", "orchid1", # lt pink
-  "palegreen4",
-  "#CAB2D6", # lt purple
-  "#FDBF6F", # lt orange
-  "gray70", "khaki2",
-  "maroon", "#FB9A99", "deeppink1", "steelblue4","blue4",
-  "darkturquoise", "green1", "yellow4", "yellow3",
-  "darkorange4", "brown"
-)
+######### scMM lmmfit functions
+source("~/FLASH-MM/R/lmmfit.nt.R")
+source("~/FLASH-MM/R/lmmfitSS.R")
+source("~/FLASH-MM/R/lmmtest.R")
+source("~/FLASH-MM/R/qqpvalue.R")
+library(FLASHMM)
 
 get_gprofiler_enrich <- function(markers, model_animal_name){
   gostres <- gost(query = markers,
@@ -32,7 +26,6 @@ get_gprofiler_enrich <- function(markers, model_animal_name){
 }
 
 model_animal_name ='hsapiens'
-head(PT_male_df_sort,30)
 num_genes = 200
 
 ########################################################
@@ -43,10 +36,6 @@ cell_meta = read.csv('~/scLMM/LMM-scRNAseq/Data/kidney_atlas/meta.tsv', sep = '\
 
 sum(cell_meta$Cell != umap_coord$V1)
 cell_meta = cbind(cell_meta, umap_coord)
-
-ggplot(cell_meta, aes(x=V2, y=V3, color=Cell_Types_Broad))+geom_point(alpha=1, size=2)+
-  theme_classic()+scale_color_manual(values = c25)+xlab('UMAP 1')+ylab('UMAP 2')+
-  theme(text = element_text(size=16),legend.title = element_blank())#
 
 ggplot(cell_meta, aes(x=V2, y=V3, color=sex))+geom_point(alpha=0.4, size=2)+
   theme_classic()+scale_color_manual(values = c("orchid1", 'lightskyblue'))+xlab('UMAP 1')+ylab('UMAP 2')+
@@ -108,12 +97,6 @@ ggplot(data=counts_norm, aes(x=CellType, y=Freq, fill=Sex)) +
   xlab('')
 
 
-######### scMM lmmfit functions
-source("~/FLASH-MM/R/lmmfit.nt.R")
-source("~/FLASH-MM/R/lmmfitSS.R")
-source("~/FLASH-MM/R/lmmtest.R")
-source("~/FLASH-MM/R/qqpvalue.R")
-
 ######### importing kidney data  
 #load('LMM-scRNAseq-jan2024/Kidney_reanalysis_CC/data/kidney-counts-lmmfit.RData')
 load("~/FLASH-MM/Results_data//kidney-counts-lmm.beta.RData")
@@ -147,7 +130,7 @@ ggplot(pvalues_df, aes(x=pvalues))+
         legend.title = element_blank()) 
 
 
-pvlmm_adj = sapply(1:ncol(pvlmm), function(i)p.adjust(pvlmm[,i], method = "fdr"))
+pvlmm_adj = sapply(1:ncol(pvlmm), function(i) p.adjust(pvlmm[,i], method = "fdr"))
 colnames(pvlmm_adj) = colnames(pvlmm)
 colnames(felmm) == colnames(pvlmm)
 sum(apply(is.na(pvlmm), 1, any))
@@ -161,57 +144,110 @@ data = readRDS(file = datafile)
 coldata = data@meta.data
 Idents(data) = data$Cell_Types_Broad
 
-                                      
-########################################################
-############## cell type marker identification ##########
-########################################################
-COEF_THR = 0.2
-cov_marker_list = list()
-for(i in 20:ncol(pvlmm_adj)){
-  df = data.frame(genes=rownames(pvlmm_adj),
-                  tvalue=tvlmm[,i],
-                  pvalue=pvlmm[,i],
-                  coef = felmm[,i],
-                  pvalue_adj=pvlmm_adj[,i],
-                  score = -log(pvlmm_adj[,i]+1e-20)*felmm[,i])
-  df_ord = df[order(df$score, decreasing = TRUE),]
-  df_ord$is_sig = df_ord$pvalue_adj<P_VAL_THR & (df_ord$coef > COEF_THR | df_ord$coef < -COEF_THR)
-  cov_marker_list[[colnames(pvlmm)[i]]] = df_ord
+
+# Initialize a data frame to store DE gene counts
+de_counts <- data.frame(cell_type = colnames(felmm), n_DE_genes = NA)
+
+# Loop over each cell type column (e.g., "CNT:Male", "PC:Male", etc.)
+for (col_name in colnames(felmm)) {
+  coef_vec <- felmm[, col_name]
+  p_adj_vec <- pvlmm_adj[, col_name]
+  de_count <- sum(p_adj_vec < 0.05 & abs(coef_vec) > 0.5)
+  de_counts[de_counts$cell_type == col_name, "n_DE_genes"] <- de_count
 }
-lapply(cov_marker_list, head)
-res= lapply(cov_marker_list, function(x) sum(x$is_sig))
-res= data.frame(numDEG=t(data.frame(res)))
-res$cellType.cov= rownames(res)
-res=res[order(res$numDEG, decreasing = T),]
-res
+
+# Sort by number of DE genes
+de_counts <- de_counts[order(-de_counts$n_DE_genes), ]
+
+# Display top few rows
+head(de_counts)
+
+################################################################################
+############## cell-type-specific sex-biased gene identification ###############
+################################################################################
 
 #col_name = 'Proximal.Tubule:Male'
 col_name ='CNT:Male' #'cTAL:Male'
 cell_type_name = 'CNT'#'cTAL'
-
+P_VAL_THR = 0.05
+# The coefficients of the interaction term are the log-FC between Male and Female within a cell-type. 
 PT_male_df = data.frame(pvalue=pvlmm[,col_name],
                         pvalue_adj = pvlmm_adj[,col_name],
                         tvalue = tvlmm[,col_name],
+                        #coefficients(interaction)=log-FC(Male/Female per cell-type 
                         coef = felmm[,col_name],
                         gene=rownames(pvlmm))
 
 PT_male_df$pvalue_adj_log = -log(PT_male_df$pvalue_adj+1e-800)
+head(PT_male_df)
+PT_male_df$pvalue_log = -log(PT_male_df$pvalue+1e-800)
+
+sum(PT_male_df$pvalue_adj < 0.05 & abs(PT_male_df$coef) > 0.5) # 200
+
+# Categorize significance with direction
+PT_male_df <- PT_male_df %>%
+  mutate(significance_group = case_when(
+    pvalue_adj < 0.05 & coef > 0.5 ~ "Male-biased",
+    pvalue_adj < 0.05 & coef < -0.5 ~ "Female-biased",
+    TRUE ~ "Not Significant"
+  ))
+
+# Top 10 male-biased and female-biased genes
+top_male <- PT_male_df %>%
+  filter(significance_group == "Male-biased") %>%
+  arrange(desc(coef)) %>%
+  head(10)
+
+top_female <- PT_male_df %>%
+  filter(significance_group == "Female-biased") %>%
+  arrange(coef) %>%
+  head(10)
+
+top_genes <- bind_rows(top_male, top_female)
+
+# Volcano plot
+ggplot(PT_male_df, aes(x = coef, y = pvalue_log)) +
+  geom_point(aes(color = significance_group), size = 2.5, alpha = 0.85) +
+  scale_color_manual(
+    values = c(
+      "Male-biased" = "#0072B2",    # Blue
+      "Female-biased" = "#CC79A7",    # Pink
+      "Not Significant" = "grey70"
+    )
+  ) +
+  labs(
+    x = "LogFC",
+    y = expression(-log[10]("P-value")),
+    color = "Significance"
+  ) +
+  theme_minimal(base_size = 18) +
+  geom_vline(xintercept = c(-0.5, 0.5), linetype = "dashed", color = "black", linewidth = 0.5) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black", linewidth = 0.5) +
+  geom_label_repel(
+    data = top_genes,
+    aes(label = gene),
+    box.padding = 0.5,
+    point.padding = 0.4,
+    label.size = 0.2,
+    size = 6,
+    segment.color = "black",
+    segment.size = 0.6,
+    min.segment.length = 0
+  )
+
+
 hist(PT_male_df$tvalue+1e-10)
 hist(PT_male_df$coef)
 hist(PT_male_df$pvalue)
 hist(PT_male_df$pvalue_adj)
 
 PT_male_df[is.na(PT_male_df$pvalue_adj),]
-# colname="cTAL:Male" ; 1848
-sum(PT_male_df$pvalue_adj<P_VAL_THR & (PT_male_df$coef > COEF_THR | PT_male_df$coef < -COEF_THR))
-PT_male_df[PT_male_df$pvalue_adj<P_VAL_THR & (PT_male_df$coef > COEF_THR | PT_male_df$coef < -COEF_THR),]
+#data_sub = data[,data$Cell_Types_Broad %in% cell_type_name]
 
 
-data_sub = data[,data$Cell_Types_Broad %in% cell_type_name]
+#write.csv(PT_male_df,"~/FLASHMM-analysis/SourceData/Figure3/Figure3C.csv",row.names = FALSE)
 
-PT_male_df$score = -log(PT_male_df$pvalue_adj+1e-600)*PT_male_df$coef
-PT_male_df_ord = PT_male_df[order(PT_male_df$score, decreasing = TRUE),]
-
+############################################################
 for(i in 1:10){
   gene_name = PT_male_df_ord$gene[i]
   gene_name
@@ -224,53 +260,28 @@ for(i in 1:10){
   print(p)
 }
 
-############### Visualizing top male specific genes
+PT_male_df$score = -log(PT_male_df$pvalue_adj+1e-600)*PT_male_df$coef
+PT_male_df_ord = PT_male_df[order(PT_male_df$score, decreasing = TRUE),]
 PT_male_df_sort = PT_male_df[order(PT_male_df$score, decreasing = T),]
-PT_male_df_sort_m = head(PT_male_df_sort,35)
-PT_male_df_sort_m$gene = factor(PT_male_df_sort_m$gene, levels = rev(PT_male_df_sort_m$gene))
-ggplot(PT_male_df_sort_m, aes(y=gene, x=score,color=pvalue_adj_log))+
-  scale_color_continuous('')+
-  geom_point(size=3)+theme_classic()+ 
-  theme(axis.text.x = element_text(angle = -90, size = 12.5), 
-        axis.text.y = element_text(size = 12.5), 
-        axis.title.x = element_text(size = 17))+xlab('Coefficient')+ylab('')
 
 
 PT_female_df_sort = PT_male_df[order(PT_male_df$score, decreasing = F),]
-PT_female_df_sort_m = head(PT_female_df_sort,35)
-PT_female_df_sort_m = PT_female_df_sort_m[nrow(PT_female_df_sort_m):1,]
-PT_female_df_sort_m$gene = factor(PT_female_df_sort_m$gene, levels = (PT_female_df_sort_m$gene))
-ggplot(PT_female_df_sort_m, aes(y=gene, x=score,color=pvalue_adj_log))+
-  scale_color_continuous('')+
-  geom_point(size=3)+theme_classic()+ 
-  scale_color_gradient(name='', low = "pink1",
-                        high = "maroon", space = "Lab" )+
-  theme(axis.text.x = element_text(angle = -90, size = 12.5), 
-        axis.text.y = element_text(size = 12.5), 
-        axis.title.x = element_text(size = 17))+
-  xlab('')+ylab('')
-
-
 
 ################################
 #### Pathway analysis 
 ############################
+num_genes=200
 enrich_res_male = get_gprofiler_enrich(markers=PT_male_df_sort$gene[1:num_genes], model_animal_name)
-enrich_res_female = get_gprofiler_enrich(markers=PT_female_df_sort$gene[1:num_genes], model_animal_name)
 
-View(enrich_res_female$result)
-View(enrich_res_male$result)
-
-enrich_res = enrich_res_female# enrich_res_female
+enrich_res = enrich_res_male# enrich_res_female
 
 head(enrich_res$result,30)
 enrich_res_pos = data.frame(enrich_res$result)
 enrich_res_pos = enrich_res_pos[1:20,]
 enrich_res_pos = enrich_res_pos[,colnames(enrich_res_pos) %in% c('term_name', 'p_value')]
 enrich_res_pos$log_p = -log(enrich_res_pos$p_value)
-title = paste0(a_cell_type)
 ggplot(enrich_res_pos, aes(y=term_name,x=log_p))+geom_bar(stat = 'identity')+xlab('-log(p value)')+
-  theme_classic()+ylab('')+ggtitle(paste0(title))
+  theme_classic()+ylab('')#+ggtitle(paste0(title))
 
 
 ################################
@@ -280,37 +291,88 @@ enrich_res_pos$log_p = -log(as.numeric(enrich_res_pos$p_value))
 enrich_res_pos = enrich_res_pos[order(enrich_res_pos$log_p, decreasing = T),]
 
 enrich_res_pos_vis = enrich_res_pos
-enrich_res_pos = enrich_res_pos[,colnames(enrich_res_pos) %in% c('term_name', 'log_p')]
-enrich_res_pos$term_name = gsub('metabolic process', 'metabolism',enrich_res_pos$term_name)
-enrich_res_pos_vis  = enrich_res_pos[!1:nrow(enrich_res_pos) %in% c(2,10,16:20),]
-rownames(enrich_res_pos_vis) = NULL
-enrich_res_pos_vis$term_name[12] = 'Transport of ions and amino acids'
+enrich_res_pos_vis$term_name = gsub('metabolic process', 'metabolism',enrich_res_pos_vis$term_name)
+rownames(enrich_res_pos_vis) <- 1:nrow(enrich_res_pos_vis)
 
-enrich_res_pos_vis$term_name <- factor(enrich_res_pos_vis$term_name, 
-                                   levels =  enrich_res_pos_vis$term_name[length(enrich_res_pos_vis$term_name):1])
+### filtering the pathway analysis results based on the following criteria: 
+#1.	Prioritize low p-values (high log_p) → to keep the most statistically significant pathways.
+#2.	Reduce redundancy by removing terms with high parent overlap or similar names.
+#3.	Favor specificity (avoid very broad terms with large term_size unless highly enriched).
+#4.	Ensure interpretability → prefer pathway names that are well-defined, specific, and not overly technical.
+keep_terms <- c(
+  "Collecting duct acid secretion",
+  "vacuolar proton-transporting V-type ATPase complex",
+  "antiporter activity",
+  "active monoatomic ion transmembrane transporter activity",
+  "basolateral plasma membrane",
+  "regulation of systemic arterial blood pressure",
+  "Insulin receptor recycling",
+  "intracellular monoatomic ion homeostasis",
+  "sodium ion import across plasma membrane",
+  "Transport of inorganic cations/anions and amino acids/oligopeptides",
+  "proton-transporting two-sector ATPase complex",
+  "ATPase dependent transmembrane transport complex",
+  "Transferrin endocytosis and recycling",
+  "circulatory system process",
+  "active transmembrane transporter activity"
+)
 
-title = ''#'stim'#'Male'
-ggplot(enrich_res_pos_vis, aes(y=term_name,x=log_p))+
-  geom_bar(stat = 'identity',fill='skyblue',color='grey10')+xlab('-log(p value)')+
-  theme_classic()+ylab('')+ggtitle(title)+
-  scale_fill_manual(values = c('skyblue'))+
-  theme(axis.text.x = element_text(color = "grey20", size = 13, angle = 0, hjust = .5, vjust = .5, face = "plain"),
-        axis.text.y = element_text(color = "grey20", size = 15, angle = 0, hjust = 1, vjust = 0, face = "plain"),  
-        axis.title.x = element_text(color = "grey20", size = 17, angle = 0, hjust = .5, vjust = 0, face = "plain"),
-        axis.title.y = element_text(color = "grey20", size = 17, angle = 90, hjust = .5, vjust = .5, face = "plain"))
+filtered_res <- enrich_res_pos_vis %>%filter(term_name %in% keep_terms)
+library(ggplot2)
+
+# Make sure `filtered_res` is already created as shown previously
+ggplot(filtered_res, aes(x = log_p, y = reorder(term_name, log_p))) +
+  geom_point(color = "steelblue", size = 4) +
+  xlab(expression(-log(p~value))) +
+  ylab("") +
+  ggtitle("") +
+  theme_classic(base_size = 17) +
+  theme(
+    axis.text.x = element_text(color = "grey20", size = 15),
+    axis.text.y = element_text(color = "grey20", size = 16),
+    axis.title.x = element_text(color = "grey20", size = 16)
+  )
 
 
-ggplot(enrich_res_pos, aes(y=term_name,x=log_p))+
-  geom_bar(stat = 'identity',fill='pink',color='grey10')+xlab('-log(p value)')+
-  theme_classic()+ylab('')+ggtitle(title)+
-  scale_fill_manual(values = c('pink'))+
-  theme(axis.text.x = element_text(color = "grey20", size = 13, angle = 0, hjust = .5, vjust = .5, face = "plain"),
-        axis.text.y = element_text(color = "grey20", size = 15, angle = 0, hjust = 1, vjust = 0, face = "plain"),  
-        axis.title.x = element_text(color = "grey20", size = 17, angle = 0, hjust = .5, vjust = 0, face = "plain"),
-        axis.title.y = element_text(color = "grey20", size = 17, angle = 90, hjust = .5, vjust = .5, face = "plain"))
+filtered_res = data.frame(filtered_res)
+filtered_res[] <- lapply(filtered_res, function(x) {
+  if (is.list(x)) sapply(x, paste, collapse = ";") else x
+})
+write.csv(filtered_res,"~/FLASHMM-analysis/SourceData/Figure3/Figure3Dmale.csv",row.names = FALSE)
+
+
+##############################################################
+###################### FEMALE Pathways ######################
+PT_female_df_sort = PT_male_df[order(PT_male_df$score, decreasing = F),]
+num_genes=c(200,400)
+enrich_res_female_1 = get_gprofiler_enrich(markers=PT_female_df_sort$gene[1:num_genes[1]], model_animal_name)
+enrich_res_female_2 = get_gprofiler_enrich(markers=PT_female_df_sort$gene[1:num_genes[2]], model_animal_name)
+
+enrich_res_pos = data.frame(rbind(enrich_res_female_1$result, 
+                                  enrich_res_female_2$result))
+
+enrich_res_pos = enrich_res_pos[,colnames(enrich_res_pos) %in% c('term_name', 'p_value')]
+enrich_res_pos$log_p = -log(enrich_res_pos$p_value)
+enrich_res_pos = enrich_res_pos[order(enrich_res_pos$log_p, decreasing = T),]
+
+ggplot(enrich_res_pos, aes(x = log_p, y = reorder(term_name, log_p))) +
+  geom_point(color = "pink", size = 4) +
+  xlab(expression(-log(p~value))) +
+  ylab("") +
+  ggtitle("") +
+  theme_classic(base_size = 17) +
+  theme(
+    axis.text.x = element_text(color = "grey20", size = 15),
+    axis.text.y = element_text(color = "grey20", size = 16),
+    axis.title.x = element_text(color = "grey20", size = 16)
+  )
 ################################
-    
-    
-    
 
+enrich_res_pos = data.frame(enrich_res_pos)
+enrich_res_pos[] <- lapply(enrich_res_pos, function(x) {
+  if (is.list(x)) sapply(x, paste, collapse = ";") else x
+})
 
+write.csv(enrich_res_pos,"~/FLASHMM-analysis/SourceData/Figure3/Figure3Dfemale.csv",row.names = FALSE)
+
+    
