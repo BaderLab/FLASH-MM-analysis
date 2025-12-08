@@ -4,6 +4,5 @@ This repository contains scripts for data analysis and manuscript figure generat
 
 The **FLASH-MM** R package, including example case scenarios, is available at:  
 [https://github.com/BaderLab/FLASHMM](https://github.com/BaderLab/FLASHMM).
-
-- The `simu_scripts` folder includes R scripts for benchmarking FLASH-MM on simulation data.  
+  
 - The `data_analysis` folder contains scripts for case-control comparisons in the **tuberculosis immune atlas** and cell-type-specific sex comparisons in the **healthy kidney dataset**.
